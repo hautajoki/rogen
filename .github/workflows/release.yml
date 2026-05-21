@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    name: Build and Release
+  build:
+    name: Build Binaries
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -47,7 +47,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci # Corrected: Uses standard Clean Install
+        run: npm ci
 
       - name: Compile Script to Binary
         run: npx pkg . --target node18-${{ matrix.target }} --output ${{ matrix.artifact_name }}
@@ -60,9 +60,27 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: ${{ matrix.compress_cmd }} ${{ matrix.asset_name }} ${{ matrix.artifact_name }}
 
-      - name: Upload to GitHub Release
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-asset
+          path: ${{ matrix.asset_name }}
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all compiled artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: final-assets
+          merge-multiple: true
+
+      - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset_name }}
+          files: final-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
