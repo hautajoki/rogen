@@ -44,17 +44,18 @@ Rogen is distributed as a standalone CLI tool. Install it into your project usin
 **Rokit (`rokit.toml`)**
 ```toml
 [tools]
-rogen = "ldgerrits/rogen@1.1.0"
+rogen = "ldgerrits/rogen@1.1.1"
 ```
 
 ### 2. Configuration (.rogen.json)
-Create a `.rogen.json` file in the root of your project. Rogen will automatically detect it and use that as the configuration.
+Create a `.rogen.json` file using `rogen --init`.
 
 Here is a default configuration structure that works for both roblox-ts and luau, including darklua support. You may want to define a custom tree in "template" for things like adding pesde packages, mapping node_modules, or customizing specific services. If you want to map specific suffixes or folder to a particular service, use the aliases field.
 
 ```json
 {
 	"source": "src",
+	"keepSuffixes": false,
 	"luau": { 
 		"output": "default.project.json", 
 		"build": "src"
@@ -71,7 +72,6 @@ Here is a default configuration structure that works for both roblox-ts and luau
 		"Controller": "ReplicatedStorage",
 		"Service": "ServerScriptService"
 	},
-	"keepSuffixes": false,
 	"template": {
 		"name": "roblox-project",
 		"globIgnorePaths": [
@@ -104,11 +104,13 @@ Here is a default configuration structure that works for both roblox-ts and luau
 }
 ```
 
-| Property            | Description                                                                                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| source           | The root directory where your uncompiled source code lives (usually "src").                                                                                                                                  |                     |
-| luau / ts / darklua | Mode-specific overrides. Rogen uses these to dictate where the compiled code ends up (build) and the name of the generated Rojo file (output) |
-| template             | The base Rojo tree template. Any standard Rojo `default.project.json` fields (like `name`, `globIgnorePaths`, or a custom `tree`) placed here will be safely merged with Rogen's auto-generated paths. You can also specify a path to a JSON file with a Rojo tree!              |
+| Property            | Description                                                                                                                                                                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| source              | The root directory where your uncompiled source code lives (defaults to "src").                                                                                                                                                                                     |
+| luau / ts / darklua | Mode-specific overrides. Rogen uses these to dictate where the compiled code ends up (build) and the name of the generated Rojo file (output)                                                                                                                       |
+| template            | The base Rojo tree template. Any standard Rojo `default.project.json` fields (like `name`, `globIgnorePaths`, or a custom `tree`) placed here will be safely merged with Rogen's auto-generated paths. You can also specify a path to a JSON file with a Rojo tree! |
+| aliases             | An object allowing you to define custom suffix or folder routing mappings. You can use this to register new keywords (e.g., "Controller": "StarterPlayerScripts") or overwrite Rogen's default service routing behaviors.                                           |
+| keepSuffixes        | A boolean flag (defaults to false). When set to true, Rogen will preserve your routing suffixes in the script names instead of stripping them out.                                                                                                                  |
 
 ### 3. CLI Usage
 You can run Rogen with optional arguments to cleanly override your configurations on the fly:

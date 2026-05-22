@@ -78,6 +78,7 @@ function getEnvironment() {
 
 function resolveActiveModes(config, hasConfig, cliMode, env) {
 	const baseLanguage = env.isTsProject ? (config.ts || defaultConfig.ts) : (config.luau || defaultConfig.luau);
+	const nonModeKeys = new Set(["source", "template", "aliases", "keepSuffixes"]);
 	const activeModes = [];
 
 	if (hasConfig) {
@@ -86,7 +87,7 @@ function resolveActiveModes(config, hasConfig, cliMode, env) {
 			activeModes.push(config[cliMode]);
 		} else {
 			for (const key in config) {
-				if (key !== "source" && key !== "template" && typeof config[key] === "object" && !Array.isArray(config[key])) {
+				if (!nonModeKeys.has(key) && typeof config[key] === "object" && !Array.isArray(config[key])) {
 					if (key === "luau" && env.isTsProject) continue;
 					if (key === "ts" && !env.isTsProject) continue;
 					if (key === "darklua" && !env.isDarkluaProject) continue;
