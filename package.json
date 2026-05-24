@@ -1,6 +1,6 @@
 {
   "name": "rogen",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "A tool for feature-based folder structures with Rojo.",
   "scripts": {
     "test": "jest",
@@ -17,6 +17,9 @@
     "targets": [
       "node18-win-x64"
     ]
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0"
   },
   "devDependencies": {
     "jest": "^30.4.2"

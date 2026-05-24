@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const chokidar = require("chokidar");
 const { printHelp, parseCliArgs } = require("./cli");
 const { resolveConfigPath, loadAndValidateConfig, loadProjectTree, getEnvironment, resolveActiveModes } = require("./config");
 const { execute } = require("./core/pipeline");
@@ -46,12 +47,20 @@ async function main() {
 		console.log(`Rogen watching for file changes in "${source}"... (Press Ctrl+C to stop)`);
 		
 		let debounceTimeout;
-		fs.watch(sourcePath, { recursive: true }, (_, filename) => {
-			if (!filename) return;
+		const watcher = chokidar.watch(sourcePath, {
+			ignoreInitial: true,
+			persistent: true,
+		});
+
+		watcher.on("all", () => {
 			clearTimeout(debounceTimeout);
 			debounceTimeout = setTimeout(() => {
 				execute(sourcePath, env, activeModes, baseProjectTree, config, cliArgs);
 			}, 100);
+		});
+
+		watcher.on("error", (error) => {
+			console.error(`\nWatch Failed: ${error.message}\n`);
 		});
 		
 		await new Promise(() => {}); // Keep alive
