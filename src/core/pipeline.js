@@ -16,6 +16,8 @@ function execute(sourcePath, env, activeModes, baseProjectTree, config, cliArgs)
 						const dir = path.dirname(item.absolutePath);
 						if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 						fs.writeFileSync(item.absolutePath, "");
+					} else if (ext === "") {
+						fs.mkdirSync(item.absolutePath, { recursive: true });
 					} else {
 						delete item.parent[item.key];
 					}
