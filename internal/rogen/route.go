@@ -93,9 +93,16 @@ func resolveRoute(relativePath string, isInit bool, ctx *routeContext) routeReso
 	mappedService := ""
 	isPrefix := false
 
+	// The three affix forms are mutually exclusive by priority; skip the
+	// later regexes once an earlier one matches.
 	sepSuffixMatch := maps.separatorSuffixRegex.FindStringSubmatch(basename)
-	pascalSuffixMatch := maps.pascalCaseSuffixRegex.FindStringSubmatch(basename)
-	prefixMatch := maps.prefixRegex.FindStringSubmatch(basename)
+	var pascalSuffixMatch, prefixMatch []string
+	if sepSuffixMatch == nil {
+		pascalSuffixMatch = maps.pascalCaseSuffixRegex.FindStringSubmatch(basename)
+		if pascalSuffixMatch == nil {
+			prefixMatch = maps.prefixRegex.FindStringSubmatch(basename)
+		}
+	}
 
 	switch {
 	case sepSuffixMatch != nil:

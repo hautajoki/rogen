@@ -5,7 +5,9 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 var initFileRegex = regexp.MustCompile(`(?i)^(index|init)([.\-][a-z0-9_]+)?\.`)
@@ -39,17 +41,62 @@ type resolvedSource struct {
 	rel string
 }
 
+// listTree enumerates every directory under root concurrently. Directory
+// listing is syscall-bound and dominates rogen's runtime, so the I/O fans out
+// while routing stays sequential and deterministic. Directories owned by an
+// init file are not descended into — their contents are never routed.
+func listTree(root string) (map[string][]os.DirEntry, error) {
+	listings := make(map[string][]os.DirEntry)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var errOnce sync.Once
+	var firstErr error
+	sem := make(chan struct{}, max(4, runtime.NumCPU()*4))
+
+	var scan func(dir string)
+	scan = func(dir string) {
+		defer wg.Done()
+		sem <- struct{}{}
+		entries, err := os.ReadDir(dir)
+		<-sem
+		if err != nil {
+			if !os.IsNotExist(err) {
+				errOnce.Do(func() { firstErr = err })
+			}
+			return
+		}
+
+		mu.Lock()
+		listings[dir] = entries
+		mu.Unlock()
+
+		for _, entry := range entries {
+			if entry.Type().IsRegular() && isInitFile(entry.Name()) {
+				return
+			}
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				wg.Add(1)
+				go scan(filepath.Join(dir, entry.Name()))
+			}
+		}
+	}
+
+	wg.Add(1)
+	go scan(root)
+	wg.Wait()
+	return listings, firstErr
+}
+
 // walkSource traverses one source tree in deterministic (sorted) order,
 // recording directory marker files and invoking the callback per source file.
 // A directory containing an init file is reported as a single unit — Rojo
 // mandates that structure — so its other contents are not routed further.
-func walkSource(dir, sourceRoot string, markers map[string]string, maps *routingMaps, callback func(filePath string, isInit bool)) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+func walkSource(dir, sourceRoot string, listings map[string][]os.DirEntry, markers map[string]string, maps *routingMaps, callback func(filePath string, isInit bool)) error {
+	entries, ok := listings[dir]
+	if !ok {
+		return nil
 	}
 
 	// Scan for a marker file (.server / .client / .shared / custom alias).
@@ -81,7 +128,7 @@ func walkSource(dir, sourceRoot string, markers map[string]string, maps *routing
 	for _, entry := range entries {
 		fullPath := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
-			if err := walkSource(fullPath, sourceRoot, markers, maps, callback); err != nil {
+			if err := walkSource(fullPath, sourceRoot, listings, markers, maps, callback); err != nil {
 				return err
 			}
 		} else if isValidSource(entry.Name()) {
@@ -179,7 +226,12 @@ func runBuild(mode Mode, baseTree map[string]any, cfg *Config, env environment, 
 			directoryMarkers:  markers,
 		}
 
-		err := walkSource(source.abs, source.abs, markers, maps, func(filePath string, isInit bool) {
+		listings, err := listTree(source.abs)
+		if err != nil {
+			return nil, err
+		}
+
+		err = walkSource(source.abs, source.abs, listings, markers, maps, func(filePath string, isInit bool) {
 			fileCount++
 			relativePath, err := filepath.Rel(source.abs, filePath)
 			if err != nil {

@@ -3,6 +3,7 @@ package rogen
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -72,15 +73,41 @@ type missingPath struct {
 	absolutePath string
 }
 
+// existsCache answers "does this file exist" with one ReadDir per directory
+// instead of a stat syscall per file — the missing-path scan touches every
+// generated leaf, and syscall count is what rogen's runtime is made of.
+type existsCache struct {
+	dirs map[string]map[string]bool
+}
+
+func (c *existsCache) exists(p string) bool {
+	dir, base := filepath.Dir(p), filepath.Base(p)
+	names, ok := c.dirs[dir]
+	if !ok {
+		names = map[string]bool{}
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, entry := range entries {
+				names[entry.Name()] = true
+			}
+		}
+		if c.dirs == nil {
+			c.dirs = map[string]map[string]bool{}
+		}
+		c.dirs[dir] = names
+	}
+	return names[base]
+}
+
 // findMissingPaths collects generated entries under buildDir whose files do
 // not exist yet (pre-compile), so the caller can stub or drop them.
 func findMissingPaths(node map[string]any, buildDir, outputDir string) []missingPath {
 	var missing []missingPath
-	findMissingPathsInto(node, "", buildDir, outputDir, &missing)
+	cache := &existsCache{}
+	findMissingPathsInto(node, "", buildDir, outputDir, cache, &missing)
 	return missing
 }
 
-func findMissingPathsInto(node map[string]any, treePath, buildDir, outputDir string, missing *[]missingPath) {
+func findMissingPathsInto(node map[string]any, treePath, buildDir, outputDir string, cache *existsCache, missing *[]missingPath) {
 	for _, key := range sortedKeys(node) {
 		child, ok := node[key].(map[string]any)
 		if !ok {
@@ -94,7 +121,7 @@ func findMissingPathsInto(node map[string]any, treePath, buildDir, outputDir str
 
 		if rojoPath, ok := child["$path"].(string); ok && pathHasPrefix(rojoPath, buildDir) {
 			absolute := absJoin(outputDir, filepath.FromSlash(rojoPath))
-			if !fileExists(absolute) {
+			if !cache.exists(absolute) {
 				*missing = append(*missing, missingPath{
 					parent:       node,
 					key:          key,
@@ -104,7 +131,7 @@ func findMissingPathsInto(node map[string]any, treePath, buildDir, outputDir str
 				})
 			}
 		}
-		findMissingPathsInto(child, childTreePath, buildDir, outputDir, missing)
+		findMissingPathsInto(child, childTreePath, buildDir, outputDir, cache, missing)
 	}
 }
 

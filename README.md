@@ -74,7 +74,7 @@ Rogen is distributed as a standalone CLI tool. Install it into your project usin
 **Rokit (`rokit.toml`)**
 ```toml
 [tools]
-rogen = "hautajoki/rogen@2.0.0"
+rogen = "hautajoki/rogen@2.0.1"
 ```
 
 Or build from source with Go 1.26+:
