@@ -1,3 +1,4 @@
 releases/
-node_modules/
 dist/
+/rogen
+rogen.exe

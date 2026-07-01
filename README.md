@@ -4,19 +4,31 @@
 	<img src="example.png" alt="Visual mapping of VS Code to Roblox Explorer" width="100%">
 </div>
 
+## About this fork
+
+This is [hautajoki](https://github.com/hautajoki)'s fork of [LDGerrits/rogen](https://github.com/LDGerrits/rogen), rewritten in Go. It keeps the upstream routing behavior and config format, and changes how paths are resolved so that complex project layouts work reliably:
+
+- **Paths in `.rogen.json` resolve relative to the config file**, not the current working directory. Running rogen from anywhere produces the same result.
+- **The `build` directory and template `$path` values resolve relative to the generated output file** — exactly how Rojo itself interprets them. The project file can be generated into a nested directory (e.g. `rojo/generated/default.project.json`) while the config stays at the project root.
+- **An explicit `--mode` is authoritative** for language detection instead of relying on a `tsconfig.json` in the cwd.
+- **Nothing is pruned silently.** When rogen removes tree entries because their paths do not exist, it says so and names them.
+- Single static binary per platform; no Node runtime. Startup is ~10x faster, which mostly matters for watch-mode regeneration latency.
+
+`keepSuffixes` from pre-1.2 versions of this fork was renamed to `keepRouteNames`, matching upstream.
+
 ## What is Rogen?
-Rogen is a command line tool that brings **feature-based architecture** to Roblox development for both luau and roblox-ts. 
+Rogen is a command line tool that brings **feature-based architecture** to Roblox development for both luau and roblox-ts.
 
 Instead of separating your codebase in a `client`, `shared` and `server` folder at the root level, Rogen lets you group your code by domain and feature. You can keep your inventory UI, inventory server script, and inventory client script all inside a single `inventory` folder. This eliminates context-switching across different folders, making your codebase significantly easier to navigate, refactor, and scale.
 
-In the background, Rogen watches your file system and dynamically generates your `default.project.json` map for Rojo. You get the freedom to group your code in any way you want, and Rogen takes care of sorting everything into the correct Roblox services like `ReplicatedStorage` and `ServerScriptService`. 
+In the background, Rogen watches your file system and dynamically generates your `default.project.json` map for Rojo. You get the freedom to group your code in any way you want, and Rogen takes care of sorting everything into the correct Roblox services like `ReplicatedStorage` and `ServerScriptService`.
 
 Moreover, Rogen allows you to merge multiple directories into a single Rojo project. This is useful for multi-place games where you want to share a core across different places.
 
 **Note:** *If you use luau, it is highly recommended to set up [darklua](https://github.com/seaofvoices/darklua) for improved string requires.*
 
 ## Automatic Routing
-Rogen determines where a file belongs by looking at your folder structure, marker files, and file names. 
+Rogen determines where a file belongs by looking at your folder structure, marker files, and file names.
 
 When multiple rules apply to the same file, Rogen follows a simple principle: **the most specific instruction wins.** An explicit rule placed directly on a file will always override a general rule set by its parent folder.
 
@@ -35,7 +47,7 @@ To route a folder, you can also place an empty marker file (e.g., `.server`, `.c
 ### 3. File Name
 To route a specific file differently than its parent folder, use a routing prefix or suffix. File affixes are absolute and will always override folder names and marker files.
 * **Delimited:** Use a separator (dot, hyphen, or underscore) before or after the base name.
-	* **Examples:** input-client.ts, server.data.ts, 
+	* **Examples:** input-client.ts, server.data.ts
 * **CamelCase & PascalCase:** Prepend or append the mapped keyword directly to the filename.
 	* **Examples:** inputClient.ts, serverData.ts
 
@@ -47,7 +59,7 @@ If no routing rules or keywords are found anywhere in the path, the file default
 **Important Note for `init` Files:** *If a folder contains an initialization file (like `init.luau` or `index.ts`), Rogen routes the folder itself but will not apply any further routing to its nested contents. This ensures full compatibility with how Rojo handles folders containing initialization scripts.*
 
 ## Merging of Multiple Sources
-Rogen supports passing an array of directories to the source config (or passing the -s CLI flag multiple times). 
+Rogen supports passing an array of directories to the source config (or passing the -s CLI flag multiple times).
 
 * **Clean Merging:** If, for example, `src/core` and `src/hub` both contain a shared folder, Rogen will merge the contents of both into a single `ReplicatedStorage/shared` folder. No duplicates are created.
 
@@ -62,11 +74,18 @@ Rogen is distributed as a standalone CLI tool. Install it into your project usin
 **Rokit (`rokit.toml`)**
 ```toml
 [tools]
-rogen = "ldgerrits/rogen@1.3.1"
+rogen = "hautajoki/rogen@2.0.0"
+```
+
+Or build from source with Go 1.26+:
+```bash
+go install github.com/hautajoki/rogen@latest
 ```
 
 ### 2. Configuration (.rogen.json)
 Create a `.rogen.json` file using `rogen --init`.
+
+Every relative path in the config resolves against the config file's directory. The `build` value and any `$path` inside `template` are written into the generated project file and resolve — for both Rojo and rogen's own existence checks — against the directory of the generated output file.
 
 Here is a default configuration structure that works for both roblox-ts and luau, including darklua support. You may want to define a custom tree in "template" for things like adding pesde packages, mapping node_modules, or customizing specific services. If you want to map specific suffixes or folder to a particular service, use the aliases field.
 
@@ -74,17 +93,17 @@ Here is a default configuration structure that works for both roblox-ts and luau
 {
 	"source": ["src"],
 	"keepRouteNames": false,
-	"luau": { 
-		"output": "default.project.json", 
+	"luau": {
+		"output": "default.project.json",
 		"build": "src"
 	},
-	"ts": { 
-		"output": "default.project.json", 
+	"ts": {
+		"output": "default.project.json",
 		"build": "out"
 	},
-	"darklua": { 
-		"output": "build.project.json", 
-		"build": "dist" 
+	"darklua": {
+		"output": "build.project.json",
+		"build": "dist"
 	},
 	"aliases": {
 		"Controller": "StarterPlayerScripts",
@@ -106,10 +125,10 @@ Here is a default configuration structure that works for both roblox-ts and luau
 			"ReplicatedStorage": {
 				"rbxts_include": {
 					"$path": "include",
-					"node_modules": { 
-						"$className": "Folder", 
-						"@rbxts": { 
-							"$path": "node_modules/@rbxts" 
+					"node_modules": {
+						"$className": "Folder",
+						"@rbxts": {
+							"$path": "node_modules/@rbxts"
 						}
 					}
 				},
@@ -124,25 +143,27 @@ Here is a default configuration structure that works for both roblox-ts and luau
 
 | Property            | Description                                                                                                                                                                                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| source              | The root directory (String) or directories (Array of Strings) where your source code lives (defaults to "src"). Passing an array allows you to merge multiple source folders into a single tree.                                                                                                                                                                                    |
-| luau / ts / darklua  | Mode-specific overrides. Rogen uses these to dictate where the compiled code ends up (build) and the name of the generated Rojo file (output)                                                                                                                       |
-| <custom_mode>  | You can define your own custom pipeline modes (e.g., "lute") by adding a new key. Custom modes must include an output and a build value.                                                                                                                       |
+| source              | The root directory (String) or directories (Array of Strings) where your source code lives (defaults to "src"), relative to the config file. Passing an array allows you to merge multiple source folders into a single tree.                                       |
+| luau / ts / darklua | Mode-specific overrides. Rogen uses these to dictate where the compiled code ends up (build, relative to the output file) and the name of the generated Rojo file (output, relative to the config file)                                                             |
+| <custom_mode>       | You can define your own custom pipeline modes (e.g., "lute") by adding a new key. Custom modes must include an output and a build value.                                                                                                                            |
 | template            | The base Rojo tree template. Any standard Rojo `default.project.json` fields (like `name`, `globIgnorePaths`, or a custom `tree`) placed here will be safely merged with Rogen's auto-generated paths. You can also specify a path to a JSON file with a Rojo tree! |
 | aliases             | An object allowing you to define custom suffix or folder routing mappings. You can use this to register new keywords (e.g., "Controller": "StarterPlayerScripts") or overwrite Rogen's default service routing behaviors.                                           |
-| keepRouteNames        | A boolean flag (defaults to false). When set to true, Rogen will preserve your routing suffixes in the script names instead of stripping them out.                                                                                                                  |
+| keepRouteNames      | A boolean flag (defaults to false). When set to true, Rogen will preserve your routing suffixes in the script names instead of stripping them out.                                                                                                                  |
 
 ### 3. CLI Usage
 You can run Rogen with optional arguments to cleanly override your configurations on the fly:
 
-- `-h, --help:` Show this help menu containing all available options.
+- `-h, --help`: Show this help menu containing all available options.
 
-- `-i, --init:` Generate a default .rogen.json config file.
+- `-v, --version`: Print the rogen version.
+
+- `-i, --init`: Generate a default .rogen.json config file.
 
 - `-c, --config <path>`: Specify a custom Rogen config file path.
 
-- `-m, --mode <mode>`: Specify the mode to run (luau, ts, darklua, or custom mode). If omitted, Rogen automatically detects your project configuration (via tsconfig.json or .darklua.json) and runs the appropriate target(s).
+- `-m, --mode <mode>`: Specify the mode to run (luau, ts, darklua, or custom mode). An explicit mode also declares the project language for routing. If omitted, Rogen detects the language from a tsconfig.json or .darklua.json next to the config file.
 
-- `-s, --source <path>`: Override the directory containing your raw, uncompiled code. Can be passed multiple times (e.g., -s src/core -s src/hub) to merge multiple directories.
+- `-s, --source <path>`: Override the directory containing your raw, uncompiled code. Can be passed multiple times (e.g., -s src/core -s src/hub) to merge multiple directories. CLI paths resolve against the current working directory.
 
 - `-t, --template <path>`: Specify a path to a JSON file that contains your base Rojo blueprint. If omitted, Rogen defaults to the inline object or file mapped in your .rogen.json.
 
@@ -182,3 +203,13 @@ And simply run the script:
 ```bash
 npm run watch
 ```
+
+## Development
+
+```bash
+go build ./...   # build
+go test ./...    # run the test suite
+go vet ./...     # static checks
+```
+
+Releases are cut by pushing a `v*` tag; CI cross-compiles binaries for Linux, Windows, and macOS (x64 + arm64) and attaches them to a GitHub release in the naming scheme rokit expects.
