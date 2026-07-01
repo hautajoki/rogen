@@ -25,15 +25,10 @@
 		"tsBuildInfoFile": "out/tsconfig.tsbuildinfo",
 		"paths": {
 			"@app/*": ["app/*"],
-			"@client/*": ["components/*"],
-			"@server/*": ["config/*"],
-			"@core/*": ["core*"],
-			"@features/*": ["features*"],
-			"@game/*": ["game*"],
-			"@hooks/*": ["hooks*"],
-			"@providers/*": ["providers*"],
-			"@store/*": ["store*"],
-			"@utils/*": ["utils*"]
+			"@base/*": ["base/*"],
+			"@infrastructure/*": ["infrastructure*"],
+			"@core/*": ["core/*"],
+			"@features/*": ["features*"]
 		}
 	},
 	"exclude": [

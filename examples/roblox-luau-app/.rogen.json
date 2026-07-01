@@ -1,5 +1,6 @@
 {
-	"source": "src",
+	"source": ["src"],
+	"keepRouteNames": false,
 	"luau": { 
 		"output": "default.project.json", 
 		"build": "src"
