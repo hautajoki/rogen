@@ -6,24 +6,31 @@ import (
 )
 
 type cliArgs struct {
-	help           bool
-	initConfig     bool
-	watch          bool
-	version        bool
-	keepRouteNames *bool
-	config         string
-	mode           string
-	template       string
-	output         string
-	build          string
-	sources        []string
+	help         bool
+	initConfig   bool
+	watch        bool
+	version      bool
+	verbatim     *bool
+	config       string
+	modes        []string
+	environments []string
+	template     string
+	output       string
+	build        string
+	sources      []string
 }
 
 const helpText = `
 Rogen - A tool for feature-based folder structures with Rojo.
 
 Usage:
-  rogen [options]
+  rogen [command] [options]
+
+Commands:
+  init                  Generate a default .rogen.json config file
+  watch                 Watch the source directories and regenerate automatically
+  help                  Show this help menu
+  version               Print the rogen version
 
 Options:
   -h, --help            Show this help menu
@@ -31,13 +38,15 @@ Options:
   -i, --init            Generate a default .rogen.json config file
   -w, --watch           Watch the source directories for changes and regenerate automatically
   -c, --config <path>   Specify a custom Rogen config file path
-  -m, --mode <mode>     Specify the mode to run (luau, ts, darklua, or a custom mode)
-  -s, --source <path>   Override the directory containing your uncompiled code (repeatable)
-  -t, --template <path> Specify a path to a JSON file containing your base Rojo tree
-  -b, --build <path>    Override the directory where your compiled/transpiled code lands
-  -o, --output <path>   Override the name and destination of the final generated Rojo project file
-  -k, --keepRouteNames  Do not strip routing prefixes or suffixes (e.g., server, client) from names
+  -m, --mode <mode>     Specify a mode to run (repeatable)
+  -e, --env <env>       Activate an environment (repeatable)
+  -s, --source <path>   Override the directory containing uncompiled code (repeatable)
+  -t, --template <path> Specify a JSON file containing the base Rojo tree
+  -b, --build <path>    Override the directory where compiled code lands
+  -o, --output <path>   Override the generated Rojo project file
+  -k, --verbatim        Preserve routing affixes except exact .server/.client suffixes
 
+The legacy --keepRouteNames spelling remains accepted.
 Paths inside the config file resolve relative to the config file's directory.
 The build directory and template $path values resolve relative to the generated
 output file, exactly as Rojo itself interprets them.
@@ -48,32 +57,57 @@ func printHelp() {
 }
 
 // parseCliArgs parses command line arguments. Both "--flag value" and
-// "--flag=value" forms are accepted; unknown flags are an error.
+// "--flag=value" forms are accepted; unknown flags and commands are errors.
 func parseCliArgs(args []string) (*cliArgs, error) {
 	parsed := &cliArgs{}
+	commandSeen := false
 
 	canonical := map[string]string{
 		"h": "help", "help": "help",
 		"v": "version", "version": "version",
 		"i": "init", "init": "init",
 		"w": "watch", "watch": "watch",
-		"k": "keepRouteNames", "keepRouteNames": "keepRouteNames",
+		"k": "verbatim", "verbatim": "verbatim", "keepRouteNames": "verbatim",
 		"c": "config", "config": "config",
 		"m": "mode", "mode": "mode",
+		"e": "env", "env": "env",
 		"s": "source", "source": "source",
 		"t": "template", "template": "template",
 		"b": "build", "build": "build",
 		"o": "output", "output": "output",
 	}
 	takesValue := map[string]bool{
-		"config": true, "mode": true, "source": true,
+		"config": true, "mode": true, "env": true, "source": true,
 		"template": true, "build": true, "output": true,
+	}
+
+	setCommand := func(command string) error {
+		if commandSeen {
+			return fmt.Errorf("unexpected command %q (only one command is allowed)", command)
+		}
+		commandSeen = true
+		switch strings.ToLower(command) {
+		case "init":
+			parsed.initConfig = true
+		case "watch":
+			parsed.watch = true
+		case "help":
+			parsed.help = true
+		case "version":
+			parsed.version = true
+		default:
+			return fmt.Errorf("unknown command %q (see --help)", command)
+		}
+		return nil
 	}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") {
-			return nil, fmt.Errorf("unexpected argument %q (rogen takes options only; see --help)", arg)
+			if err := setCommand(arg); err != nil {
+				return nil, err
+			}
+			continue
 		}
 
 		name := strings.TrimLeft(arg, "-")
@@ -92,11 +126,14 @@ func parseCliArgs(args []string) (*cliArgs, error) {
 
 		if takesValue[flag] {
 			if !hasInlineValue {
-				if i+1 >= len(args) {
+				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 					return nil, fmt.Errorf("option %q requires a value", arg)
 				}
 				i++
 				value = args[i]
+			}
+			if value == "" {
+				return nil, fmt.Errorf("option %q requires a non-empty value", arg)
 			}
 		} else if hasInlineValue {
 			return nil, fmt.Errorf("option %q does not take a value", arg)
@@ -111,13 +148,15 @@ func parseCliArgs(args []string) (*cliArgs, error) {
 			parsed.initConfig = true
 		case "watch":
 			parsed.watch = true
-		case "keepRouteNames":
+		case "verbatim":
 			yes := true
-			parsed.keepRouteNames = &yes
+			parsed.verbatim = &yes
 		case "config":
 			parsed.config = value
 		case "mode":
-			parsed.mode = value
+			parsed.modes = append(parsed.modes, value)
+		case "env":
+			parsed.environments = append(parsed.environments, value)
 		case "source":
 			parsed.sources = append(parsed.sources, value)
 		case "template":

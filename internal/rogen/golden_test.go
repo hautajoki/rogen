@@ -63,8 +63,8 @@ func TestEndToEndNestedOutputLayout(t *testing.T) {
 		t.Fatal("config not detected")
 	}
 
-	env := getEnvironment(cfg.Anchor, "ts")
-	modes, err := resolveActiveModes(cfg, true, "ts", env)
+	env := getEnvironment(cfg.Anchor, []string{"ts"})
+	modes, err := resolveActiveModes(cfg, true, []string{"ts"}, env)
 	if err != nil {
 		t.Fatal(err)
 	}

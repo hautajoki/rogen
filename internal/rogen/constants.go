@@ -19,6 +19,21 @@ var services = map[string]string{
 	"StarterPack":             "StarterPack",
 	"StarterPlayerScripts":    "StarterPlayerScripts",
 	"StarterCharacterScripts": "StarterCharacterScripts",
+	"Workspace":               "Workspace",
+	"Lighting":                "Lighting",
+	"SoundService":            "SoundService",
+	"RobloxPluginGuiService":  "RobloxPluginGuiService",
+}
+
+// These common words are useful as explicit folder or marker routes, but are
+// too collision-prone as implicit filename affixes (for example
+// default-lighting.ts). Keeping them folder-only adds the upstream services
+// without changing existing module placement.
+var folderOnlyServices = map[string]bool{
+	"Workspace":              true,
+	"Lighting":               true,
+	"SoundService":           true,
+	"RobloxPluginGuiService": true,
 }
 
 // serviceParents nests services that live under another instance in the DataModel.
@@ -49,28 +64,37 @@ var serviceAliases = map[string]bool{
 }
 
 var defaultModes = map[string]Mode{
-	"luau":    {Output: "default.project.json", Build: "src"},
-	"ts":      {Output: "default.project.json", Build: "out"},
-	"darklua": {Output: "build.project.json", Build: "dist"},
+	"luau":    {Name: "luau", Output: "default.project.json", Build: "src"},
+	"ts":      {Name: "ts", Output: "default.project.json", Build: "out"},
+	"darklua": {Name: "darklua", Output: "build.project.json", Build: "dist"},
 }
 
-// defaultConfigJSON is written by `rogen --init` and provides the fallback
-// template when no config file exists.
+// defaultConfigJSON provides the fallback modes and template when no config
+// file exists. `rogen --init` writes a project-aware minimal configuration.
 const defaultConfigJSON = `{
 	"source": ["src"],
-	"keepRouteNames": false,
+	"verbatim": false,
+	"casing": "camelCase",
+	"unwrap": false,
+	"globIgnorePaths": [],
 	"aliases": {},
 	"luau": {
 		"output": "default.project.json",
-		"build": "src"
+		"build": "src",
+		"env": [],
+		"globIgnorePaths": []
 	},
 	"ts": {
 		"output": "default.project.json",
-		"build": "out"
+		"build": "out",
+		"env": [],
+		"globIgnorePaths": []
 	},
 	"darklua": {
 		"output": "build.project.json",
-		"build": "dist"
+		"build": "dist",
+		"env": [],
+		"globIgnorePaths": []
 	},
 	"template": {
 		"name": "roblox-project",
@@ -104,14 +128,16 @@ const defaultConfigJSON = `{
 }`
 
 type routingMaps struct {
-	// mergedServices keeps the original-case keyword -> service mapping.
+	// mergedServices keeps affix-capable original-case keywords.
 	mergedServices map[string]string
-	// lowerCaseMap is the lowercase keyword -> service mapping.
-	lowerCaseMap map[string]string
+	// lowerCaseMap includes every folder/marker keyword.
+	lowerCaseMap      map[string]string
+	affixLowerCaseMap map[string]string
 
 	separatorSuffixRegex  *regexp.Regexp
 	pascalCaseSuffixRegex *regexp.Regexp
-	prefixRegex           *regexp.Regexp
+	separatorPrefixRegex  *regexp.Regexp
+	camelCasePrefixRegex  *regexp.Regexp
 }
 
 // generateRoutingMaps merges the default keyword table with custom aliases and
@@ -126,6 +152,16 @@ func generateRoutingMaps(customAliases map[string]string) *routingMaps {
 		merged[k] = v
 	}
 
+	affixMerged := make(map[string]string, len(merged))
+	for k, v := range services {
+		if !folderOnlyServices[k] {
+			affixMerged[k] = v
+		}
+	}
+	for k, v := range customAliases {
+		affixMerged[k] = v
+	}
+
 	// Custom aliases override defaults, including case-insensitive
 	// collisions like a custom "server" replacing the built-in "Server".
 	lower := make(map[string]string, len(merged))
@@ -135,9 +171,27 @@ func generateRoutingMaps(customAliases map[string]string) *routingMaps {
 	for k, v := range customAliases {
 		lower[strings.ToLower(k)] = v
 	}
+	affixLower := make(map[string]string, len(affixMerged))
+	for k, v := range services {
+		if folderOnlyServices[k] {
+			continue
+		}
+		affixLower[strings.ToLower(k)] = v
+	}
+	for k, v := range customAliases {
+		affixLower[strings.ToLower(k)] = v
+	}
 
-	mergedKeys := sortedKeysByLengthDesc(merged)
-	lowerKeys := sortedKeysByLengthDesc(lower)
+	mergedKeys := sortedKeysByLengthDesc(affixMerged)
+	lowerKeys := sortedKeysByLengthDesc(affixLower)
+	allPrefixKeySet := make(map[string]bool, len(mergedKeys)+len(lowerKeys))
+	for _, key := range mergedKeys {
+		allPrefixKeySet[key] = true
+	}
+	for _, key := range lowerKeys {
+		allPrefixKeySet[key] = true
+	}
+	allPrefixKeys := sortedKeysByLengthDesc(allPrefixKeySet)
 
 	quote := func(keys []string) string {
 		quoted := make([]string, len(keys))
@@ -148,11 +202,13 @@ func generateRoutingMaps(customAliases map[string]string) *routingMaps {
 	}
 
 	return &routingMaps{
-		mergedServices:        merged,
+		mergedServices:        affixMerged,
 		lowerCaseMap:          lower,
-		separatorSuffixRegex:  regexp.MustCompile(`(?i)[.\-_](` + quote(lowerKeys) + `)$`),
+		affixLowerCaseMap:     affixLower,
+		separatorSuffixRegex:  regexp.MustCompile(`(?i)[.\-_+](` + quote(lowerKeys) + `)$`),
 		pascalCaseSuffixRegex: regexp.MustCompile(`(` + quote(mergedKeys) + `)$`),
-		prefixRegex:           regexp.MustCompile(`(?i)^(` + quote(lowerKeys) + `)([.\-_]?)`),
+		separatorPrefixRegex:  regexp.MustCompile(`(?i)^(` + quote(lowerKeys) + `)([.\-_+])`),
+		camelCasePrefixRegex:  regexp.MustCompile(`^(` + quote(allPrefixKeys) + `)[A-Z]`),
 	}
 }
 

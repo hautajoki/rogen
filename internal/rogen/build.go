@@ -1,6 +1,7 @@
 package rogen
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 var initFileRegex = regexp.MustCompile(`(?i)^(index|init)([.\-][a-z0-9_]+)?\.`)
@@ -26,8 +29,27 @@ func isModelFile(filename string) bool {
 	return strings.HasSuffix(lower, ".rbxm") || strings.HasSuffix(lower, ".rbxmx")
 }
 
+func isDataFile(filename string) bool {
+	lower := strings.ToLower(filename)
+	for _, extension := range []string{".json", ".toml", ".yaml", ".yml", ".msgpack", ".md", ".txt", ".csv"} {
+		if strings.HasSuffix(lower, extension) {
+			return true
+		}
+	}
+	return false
+}
+
+func isKeepFile(filename string) bool {
+	switch strings.ToLower(filename) {
+	case ".keep", ".keepme", ".gitkeep", ".gitkeepme":
+		return true
+	default:
+		return false
+	}
+}
+
 func isValidSource(filename string) bool {
-	return isScriptFile(filename) || isModelFile(filename)
+	return isScriptFile(filename) || isModelFile(filename) || isDataFile(filename)
 }
 
 func isInitFile(filename string) bool {
@@ -89,33 +111,14 @@ func listTree(root string) (map[string][]os.DirEntry, error) {
 	return listings, firstErr
 }
 
-// walkSource traverses one source tree in deterministic (sorted) order,
-// recording directory marker files and invoking the callback per source file.
+// walkSource traverses one source tree in deterministic (sorted) order and
+// invokes the callback for each source or keep file.
 // A directory containing an init file is reported as a single unit — Rojo
 // mandates that structure — so its other contents are not routed further.
-func walkSource(dir, sourceRoot string, listings map[string][]os.DirEntry, markers map[string]string, maps *routingMaps, callback func(filePath string, isInit bool)) error {
+func walkSource(dir string, listings map[string][]os.DirEntry, callback func(filePath string, isInit bool)) error {
 	entries, ok := listings[dir]
 	if !ok {
 		return nil
-	}
-
-	// Scan for a marker file (.server / .client / .shared / custom alias).
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type().IsRegular() && strings.HasPrefix(name, ".") {
-			marker := strings.ToLower(name[1:])
-			if maps.lowerCaseMap[marker] != "" {
-				relDir, err := filepath.Rel(sourceRoot, dir)
-				if err != nil {
-					return err
-				}
-				if relDir == "." {
-					relDir = ""
-				}
-				markers[filepath.ToSlash(relDir)] = marker
-				break
-			}
-		}
 	}
 
 	for _, entry := range entries {
@@ -128,14 +131,100 @@ func walkSource(dir, sourceRoot string, listings map[string][]os.DirEntry, marke
 	for _, entry := range entries {
 		fullPath := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
-			if err := walkSource(fullPath, sourceRoot, listings, markers, maps, callback); err != nil {
+			if err := walkSource(fullPath, listings, callback); err != nil {
 				return err
 			}
-		} else if isValidSource(entry.Name()) {
+		} else if isValidSource(entry.Name()) || isKeepFile(entry.Name()) {
 			callback(fullPath, false)
 		}
 	}
 	return nil
+}
+
+var systemMarkers = map[string]bool{
+	"raw":      true,
+	"verbatim": true,
+	"unwrap":   true,
+}
+
+func buildDirectoryMarkers(sourceRoot string, listings map[string][]os.DirEntry, maps *routingMaps, knownEnvs map[string]bool) (map[string][]string, error) {
+	markers := map[string][]string{}
+	for dir, entries := range listings {
+		var found []string
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() || !strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			marker := strings.ToLower(strings.TrimPrefix(entry.Name(), "."))
+			if systemMarkers[marker] || maps.lowerCaseMap[marker] != "" || knownEnvs[marker] {
+				found = append(found, marker)
+			}
+		}
+		if len(found) == 0 {
+			continue
+		}
+		relative, err := filepath.Rel(sourceRoot, dir)
+		if err != nil {
+			return nil, err
+		}
+		if relative == "." {
+			relative = ""
+		}
+		markers[filepath.ToSlash(relative)] = found
+	}
+	return markers, nil
+}
+
+func environmentSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[strings.ToLower(value)] = true
+	}
+	return set
+}
+
+func buildEnvironments(cfg *Config, mode Mode, cli *cliArgs) (map[string]bool, map[string]bool, []environmentRegexes) {
+	activeValues := append(append([]string{}, mode.Environments...), cli.environments...)
+	active := environmentSet(activeValues)
+	known := map[string]bool{}
+	for _, configuredMode := range cfg.Modes {
+		for env := range environmentSet(configuredMode.Environments) {
+			known[env] = true
+		}
+	}
+	for env := range active {
+		known[env] = true
+	}
+
+	expressions := make([]environmentRegexes, 0, len(active))
+	for _, env := range sortedKeysByLengthDesc(active) {
+		quoted := regexp.QuoteMeta(env)
+		expressions = append(expressions, environmentRegexes{
+			suffix: regexp.MustCompile(`(?i)[.\-_+]` + quoted + `$`),
+			prefix: regexp.MustCompile(`(?i)^` + quoted + `[.\-_+]`),
+			middle: regexp.MustCompile(`(?i)[.\-_+]` + quoted + `(?P<delimiter>[.\-_+])`),
+		})
+	}
+	return active, known, expressions
+}
+
+func validateGlobPatterns(patterns []string) error {
+	for _, pattern := range patterns {
+		if _, err := doublestar.Match(pattern, ""); err != nil {
+			return fmt.Errorf("invalid globIgnorePaths pattern %q: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
+func matchesAnyGlob(patterns []string, filename string) bool {
+	for _, pattern := range patterns {
+		matched, _ := doublestar.Match(pattern, filename)
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSubPath derives the extra build sub-directory for multi-source setups:
@@ -165,6 +254,7 @@ type buildResult struct {
 	tree       map[string]any
 	missing    []missingPath
 	removed    []removedPath
+	collisions []string
 	name       string
 	buildDir   string
 	fileCount  int
@@ -205,63 +295,111 @@ func runBuild(mode Mode, baseTree map[string]any, cfg *Config, env environment, 
 		emitLegacyScripts = e
 	}
 
-	keepRouteNames := false
-	if cli.keepRouteNames != nil {
-		keepRouteNames = *cli.keepRouteNames
-	} else if cfg.KeepRouteNames != nil {
-		keepRouteNames = *cfg.KeepRouteNames
+	verbatim := cfg.Verbatim
+	if cli.verbatim != nil {
+		verbatim = *cli.verbatim
 	}
 
 	maps := generateRoutingMaps(cfg.Aliases)
+	activeEnvs, knownEnvs, envRegexes := buildEnvironments(cfg, mode, cli)
+
+	globPatterns := append(append([]string{}, cfg.GlobIgnorePaths...), mode.GlobIgnorePaths...)
+	if err := validateGlobPatterns(globPatterns); err != nil {
+		return nil, err
+	}
+
+	type nodeOrigin struct {
+		source string
+		file   string
+	}
+	nodeOrigins := map[string]nodeOrigin{}
+	var collisions []string
 	fileCount := 0
 
 	for _, source := range sources {
-		markers := map[string]string{}
-		ctx := &routeContext{
-			build:             path.Join(build, buildSubPath(source.rel)),
-			isTsProject:       env.isTsProject,
-			emitLegacyScripts: emitLegacyScripts,
-			keepRouteNames:    keepRouteNames,
-			maps:              maps,
-			directoryMarkers:  markers,
-		}
-
 		listings, err := listTree(source.abs)
 		if err != nil {
 			return nil, err
 		}
+		markers, err := buildDirectoryMarkers(source.abs, listings, maps, knownEnvs)
+		if err != nil {
+			return nil, err
+		}
+		ctx := &routeContext{
+			build:             path.Join(build, buildSubPath(source.rel)),
+			isTsProject:       env.isTsProject,
+			emitLegacyScripts: emitLegacyScripts,
+			verbatim:          verbatim,
+			unwrap:            cfg.Unwrap,
+			maps:              maps,
+			directoryMarkers:  markers,
+			knownEnvs:         knownEnvs,
+			activeEnvs:        activeEnvs,
+			envRegexes:        envRegexes,
+		}
 
-		err = walkSource(source.abs, source.abs, listings, markers, maps, func(filePath string, isInit bool) {
-			fileCount++
+		var callbackErr error
+		err = walkSource(source.abs, listings, func(filePath string, isInit bool) {
 			relativePath, err := filepath.Rel(source.abs, filePath)
 			if err != nil {
+				callbackErr = err
 				return
 			}
-			route := resolveRoute(filepath.ToSlash(relativePath), isInit, ctx)
+			relativePath = filepath.ToSlash(relativePath)
+			if matchesAnyGlob(globPatterns, relativePath) {
+				return
+			}
+
+			route := resolveRoute(relativePath, isInit, ctx)
+			if route.dropped {
+				return
+			}
+			fileCount++
 
 			current := tree
 			if parent, ok := serviceParents[route.targetService]; ok {
 				current = getOrCreateNode(current, parent, "")
 			}
 			current = getOrCreateNode(current, route.targetService, "")
-			current = getOrCreateNode(current, route.wrapperFolder, "Folder")
+			routeKeyParts := []string{route.targetService}
+			if !route.unwrap {
+				wrapper := applyCasing(route.wrapperFolder, cfg.Casing)
+				current = getOrCreateNode(current, wrapper, "Folder")
+				routeKeyParts = append(routeKeyParts, wrapper)
+			}
 
 			for _, part := range route.virtualParts {
 				current = getOrCreateNode(current, part, "Folder")
+				routeKeyParts = append(routeKeyParts, part)
+			}
+
+			if isKeepFile(filepath.Base(filePath)) {
+				return
 			}
 
 			node, ok := current[route.nodeName].(map[string]any)
 			if !ok {
 				node = map[string]any{}
 			}
+			routeKey := strings.Join(append(routeKeyParts, route.nodeName), "\x00")
+			if _, hasPath := node["$path"]; hasPath {
+				if origin, ok := nodeOrigins[routeKey]; ok && origin.source == source.abs {
+					collisions = append(collisions,
+						fmt.Sprintf("name collision: %q and %q both map to node %q", origin.file, relativePath, route.nodeName))
+				}
+			}
 			node["$path"] = route.projectPath
 			if node["$className"] == "Folder" {
 				delete(node, "$className")
 			}
 			current[route.nodeName] = node
+			nodeOrigins[routeKey] = nodeOrigin{source: source.abs, file: relativePath}
 		})
 		if err != nil {
 			return nil, err
+		}
+		if callbackErr != nil {
+			return nil, callbackErr
 		}
 	}
 
@@ -273,6 +411,7 @@ func runBuild(mode Mode, baseTree map[string]any, cfg *Config, env environment, 
 		tree:       rojoTree,
 		missing:    missing,
 		removed:    removed,
+		collisions: collisions,
 		name:       name,
 		buildDir:   build,
 		fileCount:  fileCount,

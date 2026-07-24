@@ -51,7 +51,7 @@ func TestBuildRoutesAndIgnoresNonRobloxFiles(t *testing.T) {
 		"src/systems/Combat.server.lua",
 		"src/ui/init.lua",
 		"src/ui/Button.lua",
-		"src/ignoreMe.txt",
+		"src/ignoreMe.pdf",
 		"src/Weapon.rbxm",
 	)
 

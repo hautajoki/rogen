@@ -10,9 +10,11 @@ func baseRouteContext() *routeContext {
 		build:             "src",
 		isTsProject:       false,
 		emitLegacyScripts: true,
-		keepRouteNames:    false,
+		verbatim:          false,
 		maps:              generateRoutingMaps(nil),
-		directoryMarkers:  map[string]string{},
+		directoryMarkers:  map[string][]string{},
+		knownEnvs:         map[string]bool{},
+		activeEnvs:        map[string]bool{},
 	}
 }
 
@@ -123,7 +125,7 @@ func TestRouteCustomAliases(t *testing.T) {
 
 func TestRouteKeepRouteNames(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.keepRouteNames = true
+	ctx.verbatim = true
 
 	// .server/.client dot-affixes are stripped regardless: Rojo needs them.
 	result := resolveRoute("systems/Combat.server.lua", false, ctx)
@@ -166,7 +168,7 @@ func TestRoutePrefixStripIncludesSeparator(t *testing.T) {
 
 func TestRouteRootMarker(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.directoryMarkers = map[string]string{"": "server"}
+	ctx.directoryMarkers = map[string][]string{"": {"server"}}
 	result := resolveRoute("Combat.lua", false, ctx)
 	if result.targetService != "ServerScriptService" || result.wrapperFolder != "server" {
 		t.Errorf("%+v", result)
@@ -175,7 +177,7 @@ func TestRouteRootMarker(t *testing.T) {
 
 func TestRouteDirectoryMarkerPreservesFolderName(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.directoryMarkers = map[string]string{"AntiCheat": "server"}
+	ctx.directoryMarkers = map[string][]string{"AntiCheat": {"server"}}
 	result := resolveRoute("AntiCheat/scanner.lua", false, ctx)
 	if result.targetService != "ServerScriptService" {
 		t.Errorf("targetService = %q", result.targetService)
@@ -187,7 +189,7 @@ func TestRouteDirectoryMarkerPreservesFolderName(t *testing.T) {
 
 func TestRouteSuffixBeatsMarker(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.directoryMarkers = map[string]string{"network": "shared"}
+	ctx.directoryMarkers = map[string][]string{"network": {"shared"}}
 	result := resolveRoute("network/api.server.lua", false, ctx)
 	if result.targetService != "ServerScriptService" || result.wrapperFolder != "server" {
 		t.Errorf("%+v", result)
@@ -196,7 +198,7 @@ func TestRouteSuffixBeatsMarker(t *testing.T) {
 
 func TestRouteMarkerBeatsFolderKeywordAndStrips(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.directoryMarkers = map[string]string{"client": "server"}
+	ctx.directoryMarkers = map[string][]string{"client": {"server"}}
 	result := resolveRoute("client/main.lua", false, ctx)
 	if result.targetService != "ServerScriptService" {
 		t.Errorf("targetService = %q", result.targetService)
@@ -215,7 +217,7 @@ func TestRouteDeepestFolderKeywordWins(t *testing.T) {
 
 func TestRouteDeepMarkerBeatsRootMarker(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.directoryMarkers = map[string]string{"": "client", "systems": "server"}
+	ctx.directoryMarkers = map[string][]string{"": {"client"}, "systems": {"server"}}
 	result := resolveRoute("systems/main.lua", false, ctx)
 	if result.targetService != "ServerScriptService" {
 		t.Errorf("targetService = %q", result.targetService)
@@ -231,7 +233,7 @@ func TestRouteFileSuffixBeatsFolderKeyword(t *testing.T) {
 
 func TestRouteFilePrefixBeatsRootMarker(t *testing.T) {
 	ctx := baseRouteContext()
-	ctx.directoryMarkers = map[string]string{"": "client"}
+	ctx.directoryMarkers = map[string][]string{"": {"client"}}
 	result := resolveRoute("server.combat.lua", false, ctx)
 	if result.targetService != "ServerScriptService" || result.wrapperFolder != "server" {
 		t.Errorf("%+v", result)

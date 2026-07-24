@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hautajoki/rogen/internal/rogen"
+	"github.com/hautajoki/rogen/v2/internal/rogen"
 )
 
 func main() {

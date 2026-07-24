@@ -6,7 +6,7 @@
 
 ## About this fork
 
-This is [hautajoki](https://github.com/hautajoki)'s fork of [LDGerrits/rogen](https://github.com/LDGerrits/rogen), rewritten in Go. It keeps the upstream routing behavior and config format, and changes how paths are resolved so that complex project layouts work reliably:
+This is [hautajoki](https://github.com/hautajoki)'s fork of [LDGerrits/rogen](https://github.com/LDGerrits/rogen), rewritten in Go. It tracks the upstream 1.4 routing model while changing how paths are resolved so complex project layouts work reliably:
 
 - **Paths in `.rogen.json` resolve relative to the config file**, not the current working directory. Running rogen from anywhere produces the same result.
 - **The `build` directory and template `$path` values resolve relative to the generated output file** — exactly how Rojo itself interprets them. The project file can be generated into a nested directory (e.g. `rojo/generated/default.project.json`) while the config stays at the project root.
@@ -14,7 +14,9 @@ This is [hautajoki](https://github.com/hautajoki)'s fork of [LDGerrits/rogen](ht
 - **Nothing is pruned silently.** When rogen removes tree entries because their paths do not exist, it says so and names them.
 - Single static binary per platform; no Node runtime. Startup is ~10x faster, which mostly matters for watch-mode regeneration latency.
 
-`keepSuffixes` from pre-1.2 versions of this fork was renamed to `keepRouteNames`, matching upstream.
+The canonical name-preservation setting is now `verbatim`. Existing
+`keepRouteNames` configs and the `--keepRouteNames` CLI spelling remain
+supported as compatibility aliases.
 
 ## What is Rogen?
 Rogen is a command line tool that brings **feature-based architecture** to Roblox development for both luau and roblox-ts.
@@ -30,7 +32,8 @@ Moreover, Rogen allows you to merge multiple directories into a single Rojo proj
 ## Automatic Routing
 Rogen determines where a file belongs by looking at your folder structure, marker files, and file names.
 
-When multiple rules apply to the same file, Rogen follows a simple principle: **the most specific instruction wins.** An explicit rule placed directly on a file will always override a general rule set by its parent folder.
+When multiple rules apply, the deepest folder instruction wins. A marker
+overrides the folder it is inside, and an explicit file affix overrides both.
 
 Here are the routing strategies, listed from lowest to highest priority:
 
@@ -46,17 +49,48 @@ To route a folder, you can also place an empty marker file (e.g., `.server`, `.c
 
 ### 3. File Name
 To route a specific file differently than its parent folder, use a routing prefix or suffix. File affixes are absolute and will always override folder names and marker files.
-* **Delimited:** Use a separator (dot, hyphen, or underscore) before or after the base name.
+* **Delimited:** Use a separator (dot, hyphen, underscore, or plus) before or after the base name.
 	* **Examples:** input-client.ts, server.data.ts
 * **CamelCase & PascalCase:** Prepend or append the mapped keyword directly to the filename.
 	* **Examples:** inputClient.ts, serverData.ts
 
-**Note:** *By default, Rogen strips the routing keyword from the final module name (e.g., `serverData.ts` and `data.server.ts` become `Data` and `data`, respectively). You can disable this behavior using the `--keepRouteNames` flag*.
+Common service names added in 1.4 (`Workspace`, `Lighting`, `SoundService`, and
+`RobloxPluginGuiService`) route as explicit folders or markers by default, not
+as implicit filename affixes. Add one to `aliases` to opt into affix routing.
+
+**Note:** *By default, Rogen strips the routing keyword from the final module
+name. Set `verbatim` or use `--verbatim` to preserve it. Exact `.server` and
+`.client` suffixes are still stripped because Rojo uses them to determine
+script type.*
 
 ### 4. Default Fallback
 If no routing rules or keywords are found anywhere in the path, the file defaults to `ReplicatedStorage`.
 
 **Important Note for `init` Files:** *If a folder contains an initialization file (like `init.luau` or `index.ts`), Rogen routes the folder itself but will not apply any further routing to its nested contents. This ensures full compatibility with how Rojo handles folders containing initialization scripts.*
+
+### Route controls
+
+- Put `.raw` in a folder to stop route-folder and filename-affix processing
+  for that subtree.
+- Put `.verbatim` in a folder to preserve routing affixes in that subtree.
+- Put `.unwrap` in a folder, or set `unwrap` globally, to omit the
+  `shared`/`server`/`client` wrapper.
+- Wrap a folder name in parentheses, such as `(inventory)` or `(server)`, to
+  use it as an invisible route group.
+- Prefix a filename with `^` to hoist it to the root of its target service
+  wrapper.
+
+Rogen also routes JSON, TOML, YAML, MessagePack, Markdown, text, and CSV data
+files. `.keep`, `.keepme`, `.gitkeep`, and `.gitkeepme` preserve empty folders
+without becoming nodes.
+
+### Environments
+
+Each mode may declare an `env` array. All environment names across modes are
+known; names active for the selected mode are stripped from file/folder names,
+while inactive names drop that file or subtree. Environment marker files work
+alongside routing markers, and repeatable `-e/--env` flags add active
+environments for a run.
 
 ## Merging of Multiple Sources
 Rogen supports passing an array of directories to the source config (or passing the -s CLI flag multiple times).
@@ -74,12 +108,12 @@ Rogen is distributed as a standalone CLI tool. Install it into your project usin
 **Rokit (`rokit.toml`)**
 ```toml
 [tools]
-rogen = "hautajoki/rogen@2.0.1"
+rogen = "hautajoki/rogen@2.1.0"
 ```
 
 Or build from source with Go 1.26+:
 ```bash
-go install github.com/hautajoki/rogen@latest
+go install github.com/hautajoki/rogen/v2@latest
 ```
 
 ### 2. Configuration (.rogen.json)
@@ -92,14 +126,19 @@ Here is a default configuration structure that works for both roblox-ts and luau
 ```json
 {
 	"source": ["src"],
-	"keepRouteNames": false,
+	"verbatim": false,
+	"casing": "camelCase",
+	"unwrap": false,
+	"globIgnorePaths": ["**/*.spec.ts"],
 	"luau": {
 		"output": "default.project.json",
-		"build": "src"
+		"build": "src",
+		"env": []
 	},
 	"ts": {
 		"output": "default.project.json",
-		"build": "out"
+		"build": "out",
+		"env": ["dev"]
 	},
 	"darklua": {
 		"output": "build.project.json",
@@ -148,7 +187,11 @@ Here is a default configuration structure that works for both roblox-ts and luau
 | <custom_mode>       | You can define your own custom pipeline modes (e.g., "lute") by adding a new key. Custom modes must include an output and a build value.                                                                                                                            |
 | template            | The base Rojo tree template. Any standard Rojo `default.project.json` fields (like `name`, `globIgnorePaths`, or a custom `tree`) placed here will be safely merged with Rogen's auto-generated paths. You can also specify a path to a JSON file with a Rojo tree! |
 | aliases             | An object allowing you to define custom suffix or folder routing mappings. You can use this to register new keywords (e.g., "Controller": "StarterPlayerScripts") or overwrite Rogen's default service routing behaviors.                                           |
-| keepRouteNames      | A boolean flag (defaults to false). When set to true, Rogen will preserve your routing suffixes in the script names instead of stripping them out.                                                                                                                  |
+| verbatim            | Preserve routing affixes globally. `keepRouteNames` is accepted as a compatibility alias. |
+| casing              | `camelCase` (default) or `PascalCase` for wrapper folder names only. |
+| unwrap              | Omit `shared`, `server`, and `client` wrapper folders globally. |
+| globIgnorePaths     | Source-relative doublestar glob patterns (`**`, `*`, `?`, classes, and brace alternatives) to skip. Mode-specific patterns are combined with this list; negation and extglobs are not supported. |
+| mode.env            | Environment labels active for that mode. Repeatable `--env` values augment them. |
 
 ### 3. CLI Usage
 You can run Rogen with optional arguments to cleanly override your configurations on the fly:
@@ -161,7 +204,9 @@ You can run Rogen with optional arguments to cleanly override your configuration
 
 - `-c, --config <path>`: Specify a custom Rogen config file path.
 
-- `-m, --mode <mode>`: Specify the mode to run (luau, ts, darklua, or custom mode). An explicit mode also declares the project language for routing. If omitted, Rogen detects the language from a tsconfig.json or .darklua.json next to the config file.
+- `-m, --mode <mode>`: Specify a mode to run. Repeat it to run multiple modes. Explicit modes also declare the project language for routing.
+
+- `-e, --env <env>`: Add an active environment. Repeatable.
 
 - `-s, --source <path>`: Override the directory containing your raw, uncompiled code. Can be passed multiple times (e.g., -s src/core -s src/hub) to merge multiple directories. CLI paths resolve against the current working directory.
 
@@ -171,9 +216,9 @@ You can run Rogen with optional arguments to cleanly override your configuration
 
 - `-o, --output <path>`: Override the name and destination of the final generated Rojo .project.json file.
 
-- `-k, --keepRouteNames`: Do not strip routing prefixes or suffixes (e.g., server, client) from names.
+- `-k, --verbatim`: Preserve routing affixes. The legacy `--keepRouteNames` spelling remains accepted.
 
-- `-w, --watch`: Watch the source directory for changes, automatically regenerating your project files.
+- `-w, --watch`: Watch the source directory for changes, automatically regenerating your project files. `rogen watch` is equivalent.
 
 As an example, it is possible to pass a specific configuration file, run a custom mode, inject a base template, and force a targeted output file all at the same time:
 ```bash

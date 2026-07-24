@@ -2,8 +2,23 @@ package rogen
 
 import (
 	"path"
+	"regexp"
 	"strings"
 )
+
+var environmentDelimiterRegex = regexp.MustCompile(`[.\-_+]`)
+
+type systemFlags struct {
+	raw      bool
+	verbatim bool
+	unwrap   bool
+}
+
+type environmentRegexes struct {
+	suffix *regexp.Regexp
+	prefix *regexp.Regexp
+	middle *regexp.Regexp
+}
 
 type routeContext struct {
 	// build is the posix-style build directory as written into the project
@@ -11,11 +26,15 @@ type routeContext struct {
 	build             string
 	isTsProject       bool
 	emitLegacyScripts bool
-	keepRouteNames    bool
+	verbatim          bool
+	unwrap            bool
 	maps              *routingMaps
 	// directoryMarkers maps source-relative directory paths ("" for the
-	// source root) to the routing keyword of a marker file found inside.
-	directoryMarkers map[string]string
+	// source root) to every recognized marker file found inside.
+	directoryMarkers map[string][]string
+	knownEnvs        map[string]bool
+	activeEnvs       map[string]bool
+	envRegexes       []environmentRegexes
 }
 
 type routeResolution struct {
@@ -24,36 +43,68 @@ type routeResolution struct {
 	virtualParts  []string
 	nodeName      string
 	projectPath   string
+	dropped       bool
+	unwrap        bool
 }
 
-// resolveRoute decides where one source file lands in the Rojo tree.
-//
-// Priority, lowest to highest: folder keyword, directory marker file, file
-// affix (separator suffix, PascalCase suffix, then prefix). The most specific
-// instruction wins; among folder rules the deepest wins.
-func resolveRoute(relativePath string, isInit bool, ctx *routeContext) routeResolution {
+type folderRouting struct {
+	targetService      string
+	virtualParts       []string
+	lastRouteKeyword   string
+	environmentKeyword string
+	flags              systemFlags
+}
+
+type affixResolution struct {
+	mappedService      string
+	matchedLength      int
+	exactMatch         string
+	environmentKeyword string
+	isPrefix           bool
+}
+
+func applyMarkers(flags *systemFlags, markers []string) {
+	for _, marker := range markers {
+		switch marker {
+		case "raw":
+			flags.raw = true
+		case "verbatim":
+			flags.verbatim = true
+		case "unwrap":
+			flags.unwrap = true
+		}
+	}
+}
+
+func firstRoutingMarker(markers []string, maps *routingMaps) string {
+	for _, marker := range markers {
+		if maps.lowerCaseMap[marker] != "" {
+			return marker
+		}
+	}
+	return ""
+}
+
+func resolveFolderRouting(parts []string, ctx *routeContext) folderRouting {
 	maps := ctx.maps
-
-	parts := strings.Split(strings.ReplaceAll(relativePath, "\\", "/"), "/")
-	filename := parts[len(parts)-1]
-	parts = parts[:len(parts)-1]
-	basename := strings.TrimSuffix(filename, path.Ext(filename))
 	virtualParts := []string{}
-
 	targetService := "ReplicatedStorage"
 	lastRouteKeyword := ""
 	environmentKeyword := ""
+	flags := systemFlags{}
 
-	// Marker routing for the source root.
-	if rootMarker, ok := ctx.directoryMarkers[""]; ok {
-		targetService = maps.lowerCaseMap[rootMarker]
-		lastRouteKeyword = rootMarker
-		if serviceAliases[rootMarker] {
-			environmentKeyword = rootMarker
+	rootMarkers := ctx.directoryMarkers[""]
+	applyMarkers(&flags, rootMarkers)
+	if !flags.raw {
+		if marker := firstRoutingMarker(rootMarkers, maps); marker != "" {
+			targetService = maps.lowerCaseMap[marker]
+			lastRouteKeyword = marker
+			if serviceAliases[marker] {
+				environmentKeyword = marker
+			}
 		}
 	}
 
-	// Folder routing.
 	currentPath := ""
 	for _, part := range parts {
 		if currentPath == "" {
@@ -63,132 +114,242 @@ func resolveRoute(relativePath string, isInit bool, ctx *routeContext) routeReso
 		}
 
 		lowerPart := strings.ToLower(part)
-		matchedService := maps.lowerCaseMap[lowerPart]
-		marker := ctx.directoryMarkers[currentPath]
+		invisible := strings.HasPrefix(lowerPart, "(") && strings.HasSuffix(lowerPart, ")")
+		if invisible {
+			lowerPart = strings.TrimSuffix(strings.TrimPrefix(lowerPart, "("), ")")
+		}
 
-		switch {
-		case marker != "":
+		markers := ctx.directoryMarkers[currentPath]
+		applyMarkers(&flags, markers)
+
+		if flags.raw {
+			if !ctx.activeEnvs[lowerPart] {
+				virtualParts = append(virtualParts, part)
+			}
+			continue
+		}
+
+		matchedService := maps.lowerCaseMap[lowerPart]
+		if marker := firstRoutingMarker(markers, maps); marker != "" {
 			targetService = maps.lowerCaseMap[marker]
 			lastRouteKeyword = marker
 			if serviceAliases[marker] {
 				environmentKeyword = marker
 			}
-			// Keep the folder name unless it is itself a routing keyword.
-			if matchedService == "" {
+			if matchedService == "" && !ctx.activeEnvs[lowerPart] && !invisible {
 				virtualParts = append(virtualParts, part)
 			}
-		case matchedService != "":
+			continue
+		}
+
+		if matchedService != "" {
 			targetService = matchedService
 			lastRouteKeyword = lowerPart
 			if serviceAliases[lowerPart] {
 				environmentKeyword = lowerPart
 			}
-		default:
+		} else if !ctx.activeEnvs[lowerPart] && !invisible {
 			virtualParts = append(virtualParts, part)
 		}
 	}
 
-	// Affix routing: an explicit affix on the file always wins.
-	matchedLength := 0
-	mappedService := ""
-	isPrefix := false
+	return folderRouting{
+		targetService:      targetService,
+		virtualParts:       virtualParts,
+		lastRouteKeyword:   lastRouteKeyword,
+		environmentKeyword: environmentKeyword,
+		flags:              flags,
+	}
+}
 
-	// The three affix forms are mutually exclusive by priority; skip the
-	// later regexes once an earlier one matches.
-	sepSuffixMatch := maps.separatorSuffixRegex.FindStringSubmatch(basename)
-	var pascalSuffixMatch, prefixMatch []string
-	if sepSuffixMatch == nil {
-		pascalSuffixMatch = maps.pascalCaseSuffixRegex.FindStringSubmatch(basename)
-		if pascalSuffixMatch == nil {
-			prefixMatch = maps.prefixRegex.FindStringSubmatch(basename)
+func resolveAffixes(basename string, isInit bool, maps *routingMaps) *affixResolution {
+	if match := maps.separatorSuffixRegex.FindStringSubmatch(basename); match != nil && len(match[0]) < len(basename) {
+		suffix := strings.ToLower(match[1])
+		result := &affixResolution{
+			mappedService: maps.affixLowerCaseMap[suffix],
+			matchedLength: len(match[0]),
+			exactMatch:    match[0],
 		}
+		if !isInit && serviceAliases[suffix] {
+			result.environmentKeyword = suffix
+		}
+		return result
 	}
 
-	switch {
-	case sepSuffixMatch != nil:
-		suffix := strings.ToLower(sepSuffixMatch[1])
-		mappedService = maps.lowerCaseMap[suffix]
-		matchedLength = len(sepSuffixMatch[0])
-		if !isInit && serviceAliases[suffix] {
-			environmentKeyword = suffix
+	if match := maps.pascalCaseSuffixRegex.FindStringSubmatch(basename); match != nil && len(match[0]) < len(basename) {
+		suffix := strings.ToLower(match[1])
+		result := &affixResolution{
+			mappedService: maps.mergedServices[match[1]],
+			matchedLength: len(match[0]),
+			exactMatch:    match[0],
 		}
-	case pascalSuffixMatch != nil:
-		suffix := strings.ToLower(pascalSuffixMatch[1])
-		mappedService = maps.mergedServices[pascalSuffixMatch[1]]
-		matchedLength = len(pascalSuffixMatch[0])
 		if !isInit && serviceAliases[suffix] {
-			environmentKeyword = suffix
+			result.environmentKeyword = suffix
 		}
-	case prefixMatch != nil:
-		prefix := strings.ToLower(prefixMatch[1])
-		mappedService = maps.lowerCaseMap[prefix]
-		matchedLength = len(prefixMatch[0])
+		return result
+	}
+
+	if match := maps.separatorPrefixRegex.FindStringSubmatch(basename); match != nil && len(match[0]) < len(basename) {
+		prefix := strings.ToLower(match[1])
+		result := &affixResolution{
+			mappedService: maps.affixLowerCaseMap[prefix],
+			matchedLength: len(match[0]),
+			exactMatch:    match[0],
+			isPrefix:      true,
+		}
 		if !isInit && serviceAliases[prefix] {
-			environmentKeyword = prefix
+			result.environmentKeyword = prefix
 		}
-		isPrefix = true
+		return result
 	}
 
-	if mappedService != "" {
-		targetService = mappedService
+	if match := maps.camelCasePrefixRegex.FindStringSubmatch(basename); match != nil && len(match[1]) < len(basename) {
+		prefix := strings.ToLower(match[1])
+		result := &affixResolution{
+			mappedService: maps.affixLowerCaseMap[prefix],
+			matchedLength: len(match[1]),
+			exactMatch:    match[1],
+			isPrefix:      true,
+		}
+		if !isInit && serviceAliases[prefix] {
+			result.environmentKeyword = prefix
+		}
+		return result
 	}
 
-	// Resolve the namespace wrapper folder.
-	wrapperFolder := "shared"
+	return nil
+}
+
+func wrapperFolder(targetService, environmentKeyword string) string {
 	switch {
 	case serverContainers[targetService]:
-		wrapperFolder = "server"
+		return "server"
 	case clientContainers[targetService]:
-		wrapperFolder = "client"
+		return "client"
 	case environmentKeyword != "":
-		wrapperFolder = environmentKeyword
+		return environmentKeyword
+	default:
+		return "shared"
+	}
+}
+
+// resolveRoute decides where one source file lands in the Rojo tree.
+//
+// The deepest folder instruction wins, a marker overrides the folder it is
+// inside, and a file affix overrides both. Environment labels filter and
+// disappear before routing is resolved.
+func resolveRoute(relativePath string, isInit bool, ctx *routeContext) routeResolution {
+	relativePath = strings.ReplaceAll(relativePath, "\\", "/")
+	parts := strings.Split(relativePath, "/")
+	filename := parts[len(parts)-1]
+	parts = parts[:len(parts)-1]
+
+	rawBasename := strings.TrimSuffix(filename, path.Ext(filename))
+	basename := rawBasename
+	hoisted := strings.HasPrefix(basename, "^")
+	if hoisted {
+		basename = strings.TrimPrefix(basename, "^")
 	}
 
-	// Scripts with non-legacy RunContext run incorrectly in StarterPlayer containers.
+	currentPath := ""
+	for _, part := range parts {
+		if currentPath == "" {
+			currentPath = part
+		} else {
+			currentPath += "/" + part
+		}
+		lowerPart := strings.ToLower(part)
+		if ctx.knownEnvs[lowerPart] && !ctx.activeEnvs[lowerPart] {
+			return routeResolution{dropped: true}
+		}
+		for _, marker := range ctx.directoryMarkers[currentPath] {
+			if ctx.knownEnvs[marker] && !ctx.activeEnvs[marker] {
+				return routeResolution{dropped: true}
+			}
+		}
+	}
+	for _, marker := range ctx.directoryMarkers[""] {
+		if ctx.knownEnvs[marker] && !ctx.activeEnvs[marker] {
+			return routeResolution{dropped: true}
+		}
+	}
+	for _, component := range environmentDelimiterRegex.Split(basename, -1) {
+		lowerComponent := strings.ToLower(component)
+		if ctx.knownEnvs[lowerComponent] && !ctx.activeEnvs[lowerComponent] {
+			return routeResolution{dropped: true}
+		}
+	}
+
+	for _, expressions := range ctx.envRegexes {
+		for expressions.suffix.MatchString(basename) {
+			basename = expressions.suffix.ReplaceAllString(basename, "")
+		}
+		for expressions.prefix.MatchString(basename) {
+			basename = expressions.prefix.ReplaceAllString(basename, "")
+		}
+		for expressions.middle.MatchString(basename) {
+			basename = expressions.middle.ReplaceAllString(basename, "${delimiter}")
+		}
+	}
+
+	folder := resolveFolderRouting(parts, ctx)
+	if hoisted {
+		folder.virtualParts = nil
+	}
+
+	var affix *affixResolution
+	if !folder.flags.raw {
+		affix = resolveAffixes(basename, isInit, ctx.maps)
+	}
+
+	targetService := folder.targetService
+	environmentKeyword := folder.environmentKeyword
+	if affix != nil {
+		targetService = affix.mappedService
+		if affix.environmentKeyword != "" {
+			environmentKeyword = affix.environmentKeyword
+		}
+	}
+	wrapper := wrapperFolder(targetService, environmentKeyword)
+
 	isStarterPlayerContainer := targetService == "StarterPlayerScripts" || targetService == "StarterCharacterScripts"
 	if !ctx.emitLegacyScripts && isStarterPlayerContainer {
 		targetService = "ReplicatedStorage"
 	}
 
 	nodeName := basename
-	var projectPath string
-
+	projectPath := ""
 	if isInit {
-		folderRelativePath := path.Dir(strings.ReplaceAll(relativePath, "\\", "/"))
-		projectPath = path.Join(ctx.build, folderRelativePath)
-		if len(virtualParts) > 0 {
-			nodeName = virtualParts[len(virtualParts)-1]
-			virtualParts = virtualParts[:len(virtualParts)-1]
-		} else if lastRouteKeyword != "" {
-			nodeName = lastRouteKeyword
+		projectPath = path.Join(ctx.build, path.Dir(relativePath))
+		if len(folder.virtualParts) > 0 {
+			nodeName = folder.virtualParts[len(folder.virtualParts)-1]
+			folder.virtualParts = folder.virtualParts[:len(folder.virtualParts)-1]
+		} else if folder.lastRouteKeyword != "" {
+			nodeName = folder.lastRouteKeyword
 		} else {
 			nodeName = "source"
 		}
 	} else {
-		compiledRelativePath := strings.ReplaceAll(relativePath, "\\", "/")
+		compiledRelativePath := relativePath
 		if ctx.isTsProject {
-			compiledFilename := replaceTsExtension(filename)
-			compiledRelativePath = path.Join(path.Dir(compiledRelativePath), compiledFilename)
+			compiledRelativePath = path.Join(path.Dir(relativePath), replaceTsExtension(filename))
 		}
 		projectPath = path.Join(ctx.build, compiledRelativePath)
 
-		if mappedService != "" {
-			shouldStrip := !ctx.keepRouteNames
-
-			// Rojo relies on '.server' and '.client' explicitly for script
-			// types; those exact dot-affixes are stripped regardless.
-			if ctx.keepRouteNames && sepSuffixMatch != nil {
-				exactMatch := strings.ToLower(sepSuffixMatch[0])
+		if affix != nil {
+			keepFullNames := ctx.verbatim || folder.flags.verbatim
+			shouldStrip := !keepFullNames
+			if keepFullNames {
+				exactMatch := strings.ToLower(affix.exactMatch)
 				if exactMatch == ".server" || exactMatch == ".client" {
 					shouldStrip = true
 				}
 			}
-
 			if shouldStrip {
-				if isPrefix {
-					nodeName = basename[matchedLength:]
+				if affix.isPrefix {
+					nodeName = basename[affix.matchedLength:]
 				} else {
-					nodeName = basename[:len(basename)-matchedLength]
+					nodeName = basename[:len(basename)-affix.matchedLength]
 				}
 			}
 		}
@@ -196,10 +357,11 @@ func resolveRoute(relativePath string, isInit bool, ctx *routeContext) routeReso
 
 	return routeResolution{
 		targetService: targetService,
-		wrapperFolder: wrapperFolder,
-		virtualParts:  virtualParts,
+		wrapperFolder: wrapper,
+		virtualParts:  folder.virtualParts,
 		nodeName:      nodeName,
 		projectPath:   projectPath,
+		unwrap:        ctx.unwrap || folder.flags.unwrap,
 	}
 }
 

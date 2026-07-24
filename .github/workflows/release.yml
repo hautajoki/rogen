@@ -27,7 +27,7 @@ jobs:
       - name: Cross-compile Binaries
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          LDFLAGS="-s -w -X github.com/hautajoki/rogen/internal/rogen.Version=${VERSION}"
+          LDFLAGS="-s -w -X github.com/hautajoki/rogen/v2/internal/rogen.Version=${VERSION}"
           mkdir -p releases
 
           build() {

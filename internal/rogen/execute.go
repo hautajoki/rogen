@@ -51,6 +51,9 @@ func execute(sources []resolvedSource, env environment, activeModes []Mode, base
 				fmt.Printf("   - %s\n", item)
 			}
 		}
+		for _, collision := range result.collisions {
+			fmt.Printf("\nWarning: %s\n", collision)
+		}
 
 		content, err := marshalSortedJSON(result.tree)
 		if err != nil {
@@ -101,7 +104,11 @@ func Run(args []string) error {
 		if fileExists(targetPath) {
 			return fmt.Errorf("a .rogen.json file already exists in this directory")
 		}
-		if err := os.WriteFile(targetPath, []byte(defaultConfigJSON+"\n"), 0o644); err != nil {
+		content, err := marshalSortedJSON(createInitConfig(cwd))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(targetPath, content, 0o644); err != nil {
 			return err
 		}
 		fmt.Println("\nSuccess! Created .rogen.json in the current directory.")
@@ -116,6 +123,11 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	for _, environment := range cli.environments {
+		if err := validateEnvironmentName(environment, cfg.Aliases); err != nil {
+			return fmt.Errorf("CLI error: %w", err)
+		}
+	}
 
 	// CLI sources resolve against the cwd; config sources against the
 	// config file's directory.
@@ -124,8 +136,8 @@ func Run(args []string) error {
 		return err
 	}
 
-	env := getEnvironment(cfg.Anchor, cli.mode)
-	activeModes, err := resolveActiveModes(cfg, hasConfig, cli.mode, env)
+	env := getEnvironment(cfg.Anchor, cli.modes)
+	activeModes, err := resolveActiveModes(cfg, hasConfig, cli.modes, env)
 	if err != nil {
 		return err
 	}
@@ -150,23 +162,27 @@ func Run(args []string) error {
 
 func resolveSources(cli *cliArgs, cfg *Config) ([]resolvedSource, error) {
 	rawSources := cfg.Sources
-	anchor := cfg.Anchor
+	resolveBase := cfg.Anchor
 	if len(cli.sources) > 0 {
 		rawSources = cli.sources
 		cwd, err := os.Getwd()
 		if err != nil {
 			return nil, err
 		}
-		anchor = cwd
+		resolveBase = cwd
 	}
 
 	sources := make([]resolvedSource, 0, len(rawSources))
 	for _, raw := range rawSources {
-		abs := absJoin(anchor, raw)
+		abs := absJoin(resolveBase, raw)
 		if !fileExists(abs) {
 			return nil, fmt.Errorf("source directory not found: %s", abs)
 		}
-		sources = append(sources, resolvedSource{abs: abs, rel: raw})
+		relative, err := filepath.Rel(cfg.Anchor, abs)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, resolvedSource{abs: abs, rel: relative})
 	}
 	return sources, nil
 }

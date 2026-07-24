@@ -70,7 +70,7 @@ func BenchmarkResolveRoute(b *testing.B) {
 		isTsProject:       true,
 		emitLegacyScripts: true,
 		maps:              generateRoutingMaps(nil),
-		directoryMarkers:  map[string]string{},
+		directoryMarkers:  map[string][]string{},
 	}
 	paths := []string{
 		"features/audio/schema.ts",

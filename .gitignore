@@ -2,3 +2,4 @@ releases/
 dist/
 /rogen
 rogen.exe
+*.test

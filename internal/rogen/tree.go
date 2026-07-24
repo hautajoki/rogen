@@ -10,6 +10,16 @@ import (
 	"strings"
 )
 
+func applyCasing(value string, casing Casing) string {
+	if value == "" {
+		return value
+	}
+	if casing == PascalCase {
+		return strings.ToUpper(value[:1]) + value[1:]
+	}
+	return strings.ToLower(value[:1]) + value[1:]
+}
+
 // getOrCreateNode returns parent[key], creating it when absent. A non-empty
 // className seeds new nodes with $className.
 func getOrCreateNode(parent map[string]any, key, className string) map[string]any {

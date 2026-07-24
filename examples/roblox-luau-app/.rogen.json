@@ -1,6 +1,8 @@
 {
 	"source": ["src"],
-	"keepRouteNames": false,
+	"verbatim": false,
+	"casing": "camelCase",
+	"unwrap": false,
 	"luau": { 
 		"output": "default.project.json", 
 		"build": "src"
